@@ -11,7 +11,8 @@ Licensed under the MIT license.
     'use strict';
 
     var options = {
-        cursors: []
+        cursors: [],
+        cursorMoveOnPan: false
     };
 
     var constants = {
@@ -59,6 +60,7 @@ Licensed under the MIT license.
                 fontWeight: '',
                 lineWidth: 1,
                 movable: true,
+                fullHeight: false,
                 mouseButton: 'all',
                 dashes: 1,
                 intersectionColor: 'darkgray',
@@ -67,6 +69,7 @@ Licensed under the MIT license.
         }
 
         plot.hooks.processOptions.push(function (plot) {
+
             plot.getOptions().cursors.forEach(function (options) {
                 plot.addCursor(options);
             });
@@ -105,6 +108,19 @@ Licensed under the MIT license.
             }
         };
 
+        plot.setMultipleCursors = function setMultipleCursors(cursorArray, optionsArray) {
+            if (cursorArray.length !== optionsArray.length) { return; }
+
+            for (var i = 0; i < cursorArray.length; i++) {
+                var index = cursors.indexOf(cursorArray[i]);
+                if (index !== -1) {
+                    mixin(optionsArray[i], cursors[index]);
+                    setPosition(plot, cursors[index], cursors[index].position);
+                }
+            }
+            plot.triggerRedrawOverlay();
+        }
+
         plot.getIntersections = function getIntersections(cursor) {
             var index = cursors.indexOf(cursor);
 
@@ -117,6 +133,10 @@ Licensed under the MIT license.
 
         function onMouseOut(e) {
             onMouseUp(e);
+        }
+
+        function onTouchOut(e) {
+            onTouchUp(e);
         }
 
         var selectedCursor = function (cursors) {
@@ -142,7 +162,7 @@ Licensed under the MIT license.
             });
         };
 
-        var visibleCursors = function(cursors) {
+        var visibleCursors = function (cursors) {
             return cursors.filter(function (cursor) {
                 return cursor.show;
             });
@@ -163,6 +183,67 @@ Licensed under the MIT license.
                     return true;
             }
         };
+
+        function onTouchDown(e) {
+            var offset = plot.offset();
+            var mouseX = Math.max(0, Math.min(e.originalEvent.touches[0].pageX - offset.left, plot.width()));
+            var mouseY = Math.max(0, Math.min(e.originalEvent.touches[0].pageY - offset.top, plot.height()));
+
+            var currentlySelectedCursor = selectedCursor(cursors);
+
+            if (currentlySelectedCursor) {
+                // unselect the cursor and move it to the current position
+                currentlySelectedCursor.selected = false;
+                plot.getPlaceholder().css('cursor', 'default');
+                currentlySelectedCursor.x = mouseX;
+                currentlySelectedCursor.y = mouseY;
+                currentlySelectedCursor.position.relativeX = currentlySelectedCursor.x / plot.width();
+                currentlySelectedCursor.position.relativeY = currentlySelectedCursor.y / plot.height();
+
+                plot.triggerRedrawOverlay();
+            } else {
+                // find nearby cursor and unlock it
+                var targetCursor;
+                var dragmode;
+
+                visibleCursors(cursors).forEach(function (cursor) {
+                    if (!cursor.movable) {
+                        return;
+                    }
+                    if (mouseOverCursorHorizontalLine(e, plot, cursor)) {
+                        targetCursor = cursor;
+                        dragmode = 'y';
+                    }
+                    if (mouseOverCursorVerticalLine(e, plot, cursor)) {
+                        targetCursor = cursor;
+                        dragmode = 'x';
+                    }
+                    if (mouseOverCursorManipulator(e, plot, cursor)) {
+                        targetCursor = cursor;
+                        dragmode = 'xy';
+                    }
+                });
+
+                if (targetCursor) {
+                    if (!correctMouseButton(targetCursor, e.button)) {
+                        return;
+                    }
+                    targetCursor.selected = true;
+                    targetCursor.dragmode = dragmode;
+                    // changed for InsightCM -max
+                    if (targetCursor.mode === 'x') {
+                        plot.getPlaceholder().css('cursor', 'ew-resize');
+                    } else if (targetCursor.mode === 'y') {
+                        plot.getPlaceholder().css('cursor', 'ns-resize');
+                    } else {
+                        plot.getPlaceholder().css('cursor', 'move');
+                    }
+                    plot.getPlaceholder().css('cursor', 'move');
+                    plot.triggerRedrawOverlay();
+                    e.stopPropagation();
+                }
+            }
+        }
 
         function onMouseDown(e) {
             var offset = plot.offset();
@@ -225,6 +306,34 @@ Licensed under the MIT license.
             }
         }
 
+        function onTouchUp(e) {
+            var offset = plot.offset();
+            console.log(e);
+            var mouseX = Math.max(0, Math.min(e.originalEvent.touches[0].pageX - offset.left, plot.width()));
+            var mouseY = Math.max(0, Math.min(e.originalEvent.touches[0].pageY - offset.top, plot.height()));
+            var currentlySelectedCursor = selectedCursor(cursors);
+
+            if (currentlySelectedCursor) {
+                if (!correctMouseButton(currentlySelectedCursor, e.button)) {
+                    return;
+                }
+                // lock the free cursor to current position
+                currentlySelectedCursor.selected = false;
+                if (currentlySelectedCursor.dragmode.indexOf('x') !== -1) {
+                    currentlySelectedCursor.x = mouseX;
+                    currentlySelectedCursor.position.relativeX = currentlySelectedCursor.x / plot.width();
+                }
+
+                if (currentlySelectedCursor.dragmode.indexOf('y') !== -1) {
+                    currentlySelectedCursor.y = mouseY;
+                    currentlySelectedCursor.position.relativeY = currentlySelectedCursor.y / plot.height();
+                }
+
+                plot.getPlaceholder().css('cursor', 'default');
+                plot.triggerRedrawOverlay();
+            }
+        }
+
         function onMouseUp(e) {
             var offset = plot.offset();
             var mouseX = Math.max(0, Math.min(e.pageX - offset.left, plot.width()));
@@ -249,6 +358,63 @@ Licensed under the MIT license.
 
                 plot.getPlaceholder().css('cursor', 'default');
                 plot.triggerRedrawOverlay();
+            }
+        }
+
+        function onTouchMove(e) {
+            var offset = plot.offset();
+            var mouseX = Math.max(0, Math.min(e.originalEvent.touches[0].pageX - offset.left, plot.width()));
+            var mouseY = Math.max(0, Math.min(e.originalEvent.touches[0].pageY - offset.top, plot.height()));
+
+            var currentlySelectedCursor = selectedCursor(cursors);
+
+            if (currentlySelectedCursor) {
+                if (currentlySelectedCursor.dragmode.indexOf('x') !== -1) {
+                    currentlySelectedCursor.x = mouseX;
+                    currentlySelectedCursor.position.relativeX = currentlySelectedCursor.x / plot.width();
+                }
+
+                if (currentlySelectedCursor.dragmode.indexOf('y') !== -1) {
+                    currentlySelectedCursor.y = mouseY;
+                    currentlySelectedCursor.position.relativeY = currentlySelectedCursor.y / plot.height();
+                }
+
+                plot.triggerRedrawOverlay();
+                e.stopPropagation();
+            } else {
+                visibleCursors(cursors).forEach(function (cursor) {
+                    if (!cursor.movable) {
+                        return;
+                    }
+                    if (mouseOverCursorManipulator(e, plot, cursor)) {
+                        if (!cursor.highlighted) {
+                            cursor.highlighted = true;
+                            plot.triggerRedrawOverlay();
+                        }
+
+                        plot.getPlaceholder().css('cursor', 'pointer');
+                    } else if (mouseOverCursorVerticalLine(e, plot, cursor)) {
+                        if (!cursor.highlighted) {
+                            cursor.highlighted = true;
+                            plot.triggerRedrawOverlay();
+                        }
+
+                        plot.getPlaceholder().css('cursor', 'col-resize');
+                    } else if (mouseOverCursorHorizontalLine(e, plot, cursor)) {
+                        if (!cursor.highlighted) {
+                            cursor.highlighted = true;
+                            plot.triggerRedrawOverlay();
+                        }
+
+                        plot.getPlaceholder().css('cursor', 'row-resize');
+                    } else {
+                        if (cursor.highlighted) {
+                            cursor.highlighted = false;
+                            plot.getPlaceholder().css('cursor', 'default');
+                            plot.triggerRedrawOverlay();
+                        }
+                    }
+                });
             }
         }
 
@@ -314,6 +480,12 @@ Licensed under the MIT license.
             eventHolder.mouseup(onMouseUp);
             eventHolder.mouseout(onMouseOut);
             eventHolder.mousemove(onMouseMove);
+
+            //Touch Events
+            eventHolder.bind('touchstart', dummy);
+            eventHolder.bind('touchmove', dummy);
+            eventHolder.bind('touchleave', dummy);
+            eventHolder.bind('touchend', dummy);
         });
 
         function findIntersections(plot, cursor) {
@@ -389,7 +561,12 @@ Licensed under the MIT license.
                     var plotOffset = plot.getPlotOffset();
 
                     ctx.save();
-                    ctx.translate(plotOffset.left, plotOffset.top);
+                    if (!cursor.fullHeight) {
+                        ctx.translate(plotOffset.left, plotOffset.top);
+                    }
+                    else {
+                        ctx.translate(plotOffset.left, 0);
+                    }
 
                     drawVerticalAndHorizontalLines(plot, ctx, cursor);
                     drawLabel(plot, ctx, cursor);
@@ -412,8 +589,17 @@ Licensed under the MIT license.
             eventHolder.unbind('mouseout', onMouseOut);
             eventHolder.unbind('mousemove', onMouseMove);
             eventHolder.unbind('cursorupdates');
+            //Touch Events
+            eventHolder.unbind('touchstart', dummy);
+            eventHolder.unbind('touchend', dummy);
+            eventHolder.unbind('touchleave', dummy);
+            eventHolder.unbind('touchmove', dummy);
             plot.getPlaceholder().css('cursor', 'default');
         });
+    }
+
+    function dummy(e) {
+        
     }
 
     function mixin(source, destination) {
@@ -482,7 +668,7 @@ Licensed under the MIT license.
         var width = plot.width();
         var height = plot.height();
         var textAlign = 'left';
-		var fontSizeInPx = Number(cursor.fontSize.substring(0, cursor.fontSize.length - 2));
+        var fontSizeInPx = Number(cursor.fontSize.substring(0, cursor.fontSize.length - 2));
 
         var y = cursor.y;
         var x = cursor.x;
@@ -507,22 +693,22 @@ Licensed under the MIT license.
         };
     }
 
-	function rowCount(cursor) {
-		return (typeof cursor.showValuesRelativeToSeries === 'number' ? 1 : 0) + (cursor.showLabel ? 1 : 0);
-	}
+    function rowCount(cursor) {
+        return (typeof cursor.showValuesRelativeToSeries === 'number' ? 1 : 0) + (cursor.showLabel ? 1 : 0);
+    }
 
-	function labelRowIndex(cursor) {
-		return 0;
-	}
+    function labelRowIndex(cursor) {
+        return 0;
+    }
 
-	function valuesRowIndex(cursor) {
-		return cursor.showLabel ? 1 : 0;
-	}
+    function valuesRowIndex(cursor) {
+        return cursor.showLabel ? 1 : 0;
+    }
 
     function drawLabel(plot, ctx, cursor) {
         if (cursor.showLabel) {
             ctx.beginPath();
-			var fontSizeInPx = Number(cursor.fontSize.substring(0, cursor.fontSize.length - 2));
+            var fontSizeInPx = Number(cursor.fontSize.substring(0, cursor.fontSize.length - 2));
             var position = computeRowPosition(plot, cursor, labelRowIndex(cursor), rowCount(cursor));
             ctx.fillStyle = cursor.color;
             ctx.textAlign = position.textAlign;
@@ -534,7 +720,7 @@ Licensed under the MIT license.
     }
 
     function fillTextAligned(ctx, text, x, y, position, fontStyle, fontWeight, fontSize, fontFamily) {
-		var fontSizeInPx = Number(fontSize.substring(0, fontSize.length - 2));
+        var fontSizeInPx = Number(fontSize.substring(0, fontSize.length - 2));
         switch (position) {
             case 'left':
                 var textWidth = ctx.measureText(text).width;
@@ -566,7 +752,7 @@ Licensed under the MIT license.
                 break;
         }
 
-        ctx.textBaseline="middle";
+        ctx.textBaseline = "middle";
         ctx.font = fontStyle + ' ' + fontWeight + ' ' + fontSize + ' ' + fontFamily;
         ctx.fillText(text, x, y);
 
@@ -594,7 +780,7 @@ Licensed under the MIT license.
                 if (typeof cursor.formatIntersectionData === 'function') {
                     text = cursor.formatIntersectionData(point);
                 } else {
-                     text= point.y.toFixed(2);
+                    text = point.y.toFixed(2);
                 }
 
                 fillTextAligned(ctx, text, coord.left, coord.top, cursor.intersectionLabelPosition, cursor.fontStyle, cursor.fontWeight, cursor.fontSize, cursor.fontFamily);
@@ -629,8 +815,13 @@ Licensed under the MIT license.
 
     function drawVerticalAndHorizontalLines(plot, ctx, cursor) {
         // abort draw if linewidth is zero
+        var canvasHeight = plot.height();
         if (cursor.lineWidth === 0) {
             return;
+        }
+        if (cursor.fullHeight) {
+            var canvasRef = plot.getCanvas();
+            canvasHeight = canvasRef.height;
         }
         // keep line sharp
         var adj = cursor.lineWidth % 2 ? 0.5 : 0;
@@ -645,10 +836,10 @@ Licensed under the MIT license.
             var drawX = Math.floor(cursor.x) + adj;
             if (cursor.dashes <= 0) {
                 ctx.moveTo(drawX, 0);
-                ctx.lineTo(drawX, plot.height());
+                ctx.lineTo(drawX, canvasHeight);
             } else {
                 var numberOfSegments = cursor.dashes * 2 - 1;
-                var delta = plot.height() / numberOfSegments;
+                var delta = canvasHeight / numberOfSegments;
                 for (var i = 0; i < numberOfSegments; i += 2) {
                     ctx.moveTo(drawX, delta * i);
                     ctx.lineTo(drawX, delta * (i + 1));
